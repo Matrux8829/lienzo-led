@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lienzo LED online · UNO R4 WiFi</title>
+<style>
+:root{
+  --board:#0f6b73; --board-ink:#eaf7f6; --panel:#14181b; --led-off:#2a2f33; --led-on:#ff3b2f; --led-glow:rgba(255,59,47,.55);
+  --btn:#f2f7f6; --btn-ink:#0b3d42; --accent:#ffd34d; --accent-ink:#2b2200; --ok:#9dffb5; --box:rgba(0,0,0,.25);
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --board:#0a4a50; --board-ink:#dff1f0; --panel:#0c0f11; --btn:#d6e6e4; --btn-ink:#06292c; }
+}
+:root[data-theme="dark"]{ --board:#0a4a50; --board-ink:#dff1f0; --panel:#0c0f11; --btn:#d6e6e4; --btn-ink:#06292c; }
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--board);color:var(--board-ink);font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;line-height:1.5;min-height:100vh;display:flex;justify-content:center;padding:20px 14px 32px}
+main{width:100%;max-width:560px}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{margin:0 0 18px;opacity:.85;max-width:46ch}
+.panel{background:var(--panel);border-radius:14px;padding:14px;box-shadow:0 0 0 3px rgba(255,255,255,.12) inset}
+#grid{display:grid;grid-template-columns:repeat(12,1fr);gap:clamp(3px,1.2vw,7px);touch-action:none;user-select:none;-webkit-user-select:none}
+.px{aspect-ratio:1;border-radius:50%;background:var(--led-off);transition:background .08s,box-shadow .08s}
+.px.on{background:var(--led-on);box-shadow:0 0 8px 2px var(--led-glow)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:10px 14px;background:var(--btn);color:var(--btn-ink);cursor:pointer;min-height:44px}
+button.main{background:var(--accent);color:var(--accent-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible{outline:3px solid #fff;outline-offset:2px}
+.box{margin-top:14px;padding:12px;border-radius:12px;background:var(--box)}
+.hidden{display:none}
+#code{font-family:ui-monospace,Consolas,monospace;font-size:2rem;font-weight:700;letter-spacing:.2em;color:var(--accent)}
+input[type=text]{font:inherit;font-size:1.3rem;letter-spacing:.15em;text-transform:uppercase;padding:10px 12px;border-radius:10px;border:0;width:9em;max-width:100%}
+label.chk{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.95rem}
+label.chk input{width:20px;height:20px;accent-color:var(--accent)}
+#status{margin-top:14px;padding:10px 12px;border-radius:10px;background:var(--box);font-size:.95rem}
+#status.ok{color:var(--ok)}
+code{font-family:ui-monospace,Consolas,monospace;font-size:.85rem;word-break:break-all}
+#hex{margin-top:10px;opacity:.85}
+small{opacity:.8}
+@media (prefers-reduced-motion:reduce){.px{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Lienzo LED online</h1>
+  <p class="sub">Un anfitrión conecta la placa por Bluetooth y abre una sala con código. Su amigo dibuja desde su propio navegador mientras la sala siga abierta.</p>
+
+  <div class="panel"><div id="grid" role="grid" aria-label="Lienzo de 12 por 8 píxeles"></div></div>
+
+  <div class="bar" id="roleBar">
+    <button id="btnHost" class="main">Soy el anfitrión</button>
+    <button id="btnGuest">Tengo un código</button>
+    <button id="invert">Invertir</button>
+    <button id="clear">Borrar todo</button>
+  </div>
+
+  <section id="hostPanel" class="box hidden">
+    <div>Código de la sala</div>
+    <div id="code">······</div>
+    <div><small>Enlace para tu amigo:</small><br><code id="link"></code></div>
+    <div class="bar">
+      <button id="copy">Copiar enlace</button>
+      <button id="ble" class="main">Conectar placa</button>
+      <button id="closeRoom">Cerrar sala</button>
+    </div>
+    <label class="chk"><input type="checkbox" id="allow" checked> Permitir que mi amigo dibuje</label>
+    <label class="chk"><input type="checkbox" id="flip" checked> Girar 180° al enviar a la placa</label>
+  </section>
+
+  <section id="guestPanel" class="box hidden">
+    <div class="bar" style="margin-top:0">
+      <input type="text" id="codeIn" maxlength="6" placeholder="CÓDIGO" aria-label="Código de la sala" autocomplete="off">
+      <button id="join" class="main">Entrar a la sala</button>
+      <button id="leave" class="hidden">Salir</button>
+    </div>
+  </section>
+
+  <div id="status">Elige tu papel: anfitrión (tiene la placa) o invitado (tiene un código).</div>
+  <div id="hex"><code id="hexout"></code></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(function(){
+  var COLS=12, ROWS=8, N=COLS*ROWS;
+  var SERVICE="19b10000-e8f2-537e-4f6c-d104768a1214";
+  var CHAR="19b10002-e8f2-537e-4f6c-d104768a1214";
+  var PREFIX="lienzoled-";
+  var ALPHA="ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+  var pixels=new Array(N).fill(0), cells=[];
+  var role=null, peer=null, conn=null, guestAllowed=true;
+  var characteristic=null, device=null, sending=false, pending=false;
+  var painting=false, paintValue=1, lastIdx=-1;
+
+  function $(id){return document.getElementById(id);}
+  var grid=$("grid"), statusEl=$("status");
+
+  for(var i=0;i<N;i++){
+    var d=document.createElement("div");
+    d.className="px"; d.dataset.i=i; d.setAttribute("role","gridcell");
+    grid.appendChild(d); cells.push(d);
+  }
+
+  function setStatus(m,ok){ statusEl.textContent=m; statusEl.className=ok?"ok":""; }
+
+  function pack(flipped){
+    var b=new Uint8Array(12);
+    for(var n=0;n<N;n++){ if(pixels[n]){ var m=flipped?N-1-n:n; b[m>>3]|=(1<<(7-(m%8))); } }
+    return b;
+  }
+  function unpack(a){ for(var n=0;n<N;n++) pixels[n]=(a[n>>3]>>(7-(n%8)))&1; }
+  function validFrame(a){
+    return Array.isArray(a)&&a.length===12&&a.every(function(v){return Number.isInteger(v)&&v>=0&&v<=255;});
+  }
+  function render(){
+    for(var i=0;i<N;i++) cells[i].classList.toggle("on",!!pixels[i]);
+    var b=pack(false), s=[];
+    for(var k=0;k<12;k++) s.push(("0"+b[k].toString(16)).slice(-2).toUpperCase());
+    $("hexout").textContent=s.join(" ");
+  }
+
+  /* ---------- Bluetooth (solo anfitrión) ---------- */
+  async function sendBle(){
+    if(!characteristic) return;
+    if(sending){ pending=true; return; }
+    sending=true;
+    try{
+      do{ pending=false; await characteristic.writeValue(pack($("flip").checked)); }while(pending);
+    }catch(err){ setStatus("No se pudo enviar a la placa: "+err.message); }
+    sending=false;
+  }
+  async function connectBle(){
+    if(!navigator.bluetooth){ setStatus("Este navegador no admite Web Bluetooth. Usa Chrome o Edge (no Brave)."); return; }
+    try{
+      setStatus("Buscando dispositivos…");
+      device=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});
+      device.addEventListener("gattserverdisconnected",function(){
+        characteristic=null; $("ble").textContent="Conectar placa"; setStatus("Se perdió la conexión con la placa.");
+      });
+      var server=await device.gatt.connect();
+      var service=await server.getPrimaryService(SERVICE);
+      characteristic=await service.getCharacteristic(CHAR);
+      $("ble").textContent="Placa conectada";
+      setStatus("Placa conectada: "+(device.name||"dispositivo")+".",true);
+      sendBle();
+    }catch(err){ setStatus("No se pudo conectar ("+err.name+"): "+err.message); }
+  }
+
+  /* ---------- Red ---------- */
+  function push(){
+    if(conn&&conn.open) conn.send({t:"frame",d:Array.from(pack(false))});
+  }
+  function canEdit(){ return role!=="guest" || (conn&&conn.open&&guestAllowed); }
+
+  function changed(){
+    render();
+    if(role==="host") sendBle();
+    push();
+  }
+
+  function randomCode(){
+    var a=new Uint32Array(6); crypto.getRandomValues(a);
+    var s=""; for(var i=0;i<6;i++) s+=ALPHA[a[i]%ALPHA.length];
+    return s;
+  }
+
+  /* anfitrión */
+  function createRoom(attempt){
+    var code=randomCode();
+    var p=new Peer(PREFIX+code);
+    peer=p;
+    p.on("open",function(){
+      role="host";
+      $("code").textContent=code;
+      $("link").textContent=location.href.split("#")[0]+"#"+code;
+      $("hostPanel").classList.remove("hidden");
+      $("guestPanel").classList.add("hidden");
+      setStatus("Sala abierta. Conecta la placa y comparte el código. Mantén esta pestaña abierta.",true);
+    });
+    p.on("connection",function(c){
+      if(conn&&conn.open){ c.on("open",function(){ c.send({t:"busy"}); setTimeout(function(){c.close();},300); }); return; }
+      conn=c;
+      c.on("open",function(){
+        c.send({t:"state",allow:$("allow").checked});
+        c.send({t:"frame",d:Array.from(pack(false))});
+        setStatus("Tu amigo se conectó.",true);
+      });
+      c.on("data",function(m){
+        if(!m||m.t!=="frame"||!$("allow").checked||!validFrame(m.d)) return;
+        unpack(m.d); render(); sendBle();
+      });
+      c.on("close",function(){ if(conn===c){ conn=null; setStatus("Tu amigo salió. La sala sigue abierta.",true); } });
+    });
+    p.on("error",function(e){
+      if(e.type==="unavailable-id"&&attempt<5){ p.destroy(); createRoom(attempt+1); }
+      else setStatus("Error de red ("+e.type+"). Revisa tu conexión a internet.");
+    });
+  }
+  function closeRoom(){
+    if(peer){ peer.destroy(); peer=null; }
+    conn=null; role=null;
+    $("hostPanel").classList.add("hidden");
+    setStatus("Sala cerrada. Ya nadie puede conectarse.");
+  }
+
+  /* invitado */
+  function joinRoom(){
+    var code=$("codeIn").value.trim().toUpperCase();
+    if(code.length<4){ setStatus("Escribe el código completo."); return; }
+    if(peer){ peer.destroy(); peer=null; }
+    setStatus("Buscando la sala…");
+    var p=new Peer(); peer=p;
+    p.on("open",function(){
+      var c=p.connect(PREFIX+code,{reliable:true});
+      c.on("open",function(){
+        conn=c; role="guest";
+        $("join").classList.add("hidden"); $("leave").classList.remove("hidden"); $("codeIn").disabled=true;
+        setStatus("Conectado a la sala "+code+".",true);
+      });
+      c.on("data",function(m){
+        if(!m) return;
+        if(m.t==="frame"&&validFrame(m.d)){ unpack(m.d); render(); }
+        else if(m.t==="state"){ guestAllowed=!!m.allow; if(!guestAllowed) setStatus("El anfitrión desactivó el dibujo: solo puedes mirar."); else setStatus("Conectado a la sala "+code+".",true); }
+        else if(m.t==="busy"){ setStatus("La sala ya tiene a otra persona conectada."); }
+      });
+      c.on("close",function(){ leave("El anfitrión cerró la sala o se perdió la conexión."); });
+    });
+    p.on("error",function(e){
+      if(e.type==="peer-unavailable") setStatus("Esa sala no está activa. El anfitrión debe abrir la página y crear la sala primero.");
+      else setStatus("Error de red ("+e.type+").");
+    });
+  }
+  function leave(msg){
+    if(peer){ peer.destroy(); peer=null; }
+    conn=null; role=null;
+    $("join").classList.remove("hidden"); $("leave").classList.add("hidden"); $("codeIn").disabled=false;
+    setStatus(msg||"Saliste de la sala.");
+  }
+
+  /* ---------- Dibujo ---------- */
+  function setPixel(i,v){
+    if(i<0||i>=N||pixels[i]===v||!canEdit()) return;
+    pixels[i]=v; cells[i].classList.toggle("on",!!v); changed();
+  }
+  function idxFromEvent(e){
+    var el=document.elementFromPoint(e.clientX,e.clientY);
+    return (el&&el.dataset&&el.dataset.i!==undefined)?parseInt(el.dataset.i,10):-1;
+  }
+  grid.addEventListener("pointerdown",function(e){
+    var i=idxFromEvent(e); if(i<0) return;
+    e.preventDefault(); painting=true; paintValue=pixels[i]?0:1; setPixel(i,paintValue);
+  });
+  grid.addEventListener("pointermove",function(e){
+    if(!painting) return;
+    var i=idxFromEvent(e); if(i<0||i===lastIdx) return;
+    lastIdx=i; setPixel(i,paintValue);
+  });
+  window.addEventListener("pointerup",function(){painting=false;lastIdx=-1;});
+  window.addEventListener("pointercancel",function(){painting=false;lastIdx=-1;});
+
+  $("clear").addEventListener("click",function(){ if(!canEdit()) return; pixels.fill(0); changed(); });
+  $("invert").addEventListener("click",function(){ if(!canEdit()) return; pixels=pixels.map(function(v){return v?0:1;}); changed(); });
+
+  /* ---------- Botones ---------- */
+  $("btnHost").addEventListener("click",function(){
+    if(role==="host") return;
+    if(role==="guest") leave();
+    setStatus("Creando sala…"); createRoom(0);
+  });
+  $("btnGuest").addEventListener("click",function(){
+    if(role==="host") closeRoom();
+    $("guestPanel").classList.remove("hidden"); $("codeIn").focus();
+    setStatus("Escribe el código que te dio el anfitrión.");
+  });
+  $("ble").addEventListener("click",connectBle);
+  $("closeRoom").addEventListener("click",closeRoom);
+  $("copy").addEventListener("click",function(){
+    var t=$("link").textContent;
+    if(navigator.clipboard) navigator.clipboard.writeText(t).then(function(){setStatus("Enlace copiado.",true);},function(){setStatus("No se pudo copiar. Selecciónalo a mano.");});
+  });
+  $("allow").addEventListener("change",function(){ if(conn&&conn.open) conn.send({t:"state",allow:$("allow").checked}); });
+  $("flip").addEventListener("change",sendBle);
+  $("join").addEventListener("click",joinRoom);
+  $("leave").addEventListener("click",function(){ leave(); });
+
+  window.addEventListener("beforeunload",function(){ if(peer) peer.destroy(); });
+
+  var h=location.hash.replace("#","").trim();
+  if(h){ $("codeIn").value=h.toUpperCase(); $("guestPanel").classList.remove("hidden"); setStatus("Pulsa Entrar a la sala."); }
+
+  render();
+})();
+</script>
+</body>
+</html>
